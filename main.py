@@ -8,7 +8,7 @@ import random
 import itertools
 from keras import callbacks
 from keras import metrics
-from keras import models
+from keras import losses
 from keras.utils import to_categorical
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import classification_report
@@ -19,20 +19,22 @@ min_occ = 30
 train_size = 0.8
 val_size = 0.1
 patience_stop = 10
-epochs = 2
+epochs = 100
 
 lookforward = 1
+weighted_loss_list = [True]
 lookback_list = [10]
 batch_list = [512]
-learning_rate_list = [0.0005]
-max_samples_list = [10000, 25000, 50000, -1]
-dropout_list = [0]
-units1_list = [64]
+learning_rate_list = [0.001]
+max_samples_list = [-1]
+dropout_list = [0.2]
+units1_list = [128]
 units2_list = [0]
 
 data_path = os.path.join(os.getcwd(), 'data')
 data_files = [f for f in os.listdir(data_path) if '.csv' in f]
-params_sweep = [max_samples_list, dropout_list, units1_list, units2_list, learning_rate_list, lookback_list, batch_list]
+params_sweep = [max_samples_list, dropout_list, units1_list, units2_list, learning_rate_list, lookback_list, batch_list,
+                weighted_loss_list]
 combs = list(itertools.product(*params_sweep))
 print('NUMBER OF SIMULATIONS: {}'.format(len(combs)))
 
@@ -44,8 +46,13 @@ for sim_ind, comb in enumerate(combs):
     learning_rate = comb[4]
     lookback = comb[5]
     batch_size = comb[6]
-    name = 'RNN ' + str(units1) + '-' + str(units2) + ' units, max samples=' + str(max_samples) + \
-           ', dropout=' + str(dropout) + ', lr=' + str(learning_rate) + ', batch=' + str(batch_size) +\
+    weighted_loss = comb[7]
+    if weighted_loss:
+        loss_name = 'weighted_categorical_loss'
+    else:
+        loss_name = 'categorical_loss'
+    name = 'RNN ' + str(units1) + '-' + str(units2) + ' units, ' + loss_name + ', max samples=' + str(max_samples) + \
+           ', dropout=' + str(dropout) + ', lr=' + str(learning_rate) + ', batch=' + str(batch_size) + \
            ' and lookback=' + str(lookback)
     df_list = [pd.read_csv(os.path.join(data_path, file), names=['time', 'ID', 'wind_speed', 'power'])
                for file in data_files]
@@ -82,7 +89,7 @@ for sim_ind, comb in enumerate(combs):
         df[['wind1', 'wind2', 'wind3']] = pd.get_dummies(df['wind_speed'])
         df.drop(columns='wind_speed', inplace=True)
         input_data += df.shape[0]
-        utils.plot_turbine_ids(df['ID'], 'Turbine number ' + str(i+1))
+        utils.plot_turbine_ids(df['ID'], 'Turbine number ' + str(i+1), folder='plots\\turbines')
         new_ids = df['ID'].unique()
         for new_id in new_ids:
             if new_id not in ids:
@@ -115,17 +122,7 @@ for sim_ind, comb in enumerate(combs):
             wind[cursor, :, :] = narray[j - lookback:j, 3:]
             target[cursor] = narray[j + lookforward - 1, 1]
             cursor += 1
-    utils.plot_turbine_ids(target, 'Total data')
-
-    # Calculate weights per ID
-    d = {}
-    c = dict(collections.Counter(target))
-    for key, value in c.items():
-        d[key] = sum(c.values()) - value
-    d = dict(sorted(d.items(), key=lambda item: item[0]))
-    weightsID = []
-    for key, value in d.items():
-        weightsID.append(value / sum(d.values()))
+    utils.plot_turbine_ids(target, 'Total data', folder='plots')
 
     # Shuffle data randomly
     random.seed(42)
@@ -154,9 +151,16 @@ for sim_ind, comb in enumerate(combs):
     train_wind = wind[train_indexes, :, :]
     val_wind = wind[val_indexes, :, :]
     test_wind = wind[test_indexes, :, :]
-    utils.plot_turbine_ids(train_target, 'Train data')
-    utils.plot_turbine_ids(val_target, 'Validation data')
-    utils.plot_turbine_ids(test_target, 'Test data')
+    utils.plot_turbine_ids(train_target, 'Train data', folder='plots')
+    utils.plot_turbine_ids(val_target, 'Validation data', folder='plots')
+    utils.plot_turbine_ids(test_target, 'Test data', folder='plots')
+
+    # Calculate weights per ID based on total train data
+    c = dict(collections.Counter(train_target))
+    c = dict(sorted(c.items(), key=lambda item: item[0], reverse=False))
+    c_values = list(c.values())
+    weightsID = [np.mean(c_values) / val for val in list(c_values)]
+    weightsID = np.array(weightsID)
 
     # Undersampling training set
     if max_samples != -1:
@@ -172,7 +176,7 @@ for sim_ind, comb in enumerate(combs):
         train_time = train_time[indexes, :]
         train_power = train_power[indexes, :]
         train_wind = train_wind[indexes, :, :]
-        utils.plot_turbine_ids(train_target, 'Train data under sampled')
+        utils.plot_turbine_ids(train_target, 'Train data under sampled', folder='plots')
 
     train_target = to_categorical(train_target, num_classes=nclasses)
     val_target = to_categorical(val_target, num_classes=nclasses)
@@ -197,6 +201,7 @@ for sim_ind, comb in enumerate(combs):
     print('VAL SAMPLES SHAPE: {}'.format(val_samples.shape))
     print('TEST SAMPLES SHAPE: {}'.format(test_samples.shape))
 
+    nfeats = train_samples.shape[2]
     train_steps = -(-train_samples.shape[0] // batch_size)
     val_steps = -(-val_samples.shape[0] // batch_size)
     test_steps = -(-test_samples.shape[0] // batch_size)
@@ -204,9 +209,17 @@ for sim_ind, comb in enumerate(combs):
     print('VAL STEPS: {} (real value = {:.2f})'.format(val_steps, val_samples.shape[0]/batch_size))
     print('TEST STEPS: {} (real value = {:.2f})'.format(test_steps, test_samples.shape[0]/batch_size))
 
-    metrics_list = [custom_metrics.unbalanced_loss(name='unbalanced_loss', weights=weightsID),
-                    custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses),
-                    custom_metrics.WeightTPR(name='TPR_weight', in_classes=nclasses)]
+    if loss_name == 'weighted_categorical_loss':
+        loss = custom_metrics.weighted_categorical_crossentropy(weights=weightsID, name=loss_name)
+        metrics_list = [metrics.CategoricalCrossentropy(name='categorical_loss'),
+                        custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses),
+                        custom_metrics.WeightTPR(name='TPR_weight', in_classes=nclasses)]
+    else:
+        loss = losses.CategoricalCrossentropy(name=loss_name)
+        metrics_list = [custom_metrics.weighted_categorical_crossentropy(weights=weightsID,
+                                                                         name='weighted_categorical_loss'),
+                        custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses),
+                        custom_metrics.WeightTPR(name='TPR_weight', in_classes=nclasses)]
     metrics_name = ['loss']
     for m in metrics_list:
         try:
@@ -217,7 +230,7 @@ for sim_ind, comb in enumerate(combs):
                       callbacks.ModelCheckpoint(os.path.join(os.getcwd(), 'models', name), monitor='val_loss',
                                                 save_best_only=True, mode='min', save_weights_only=True, verbose=1)]
 
-    model = utils.create_rnn(train_samples.shape[2], units1, units2, dropout, nclasses, learning_rate, metrics_list)
+    model = utils.create_rnn(nfeats, units1, units2, dropout, nclasses, learning_rate, loss, metrics_list)
 
     train_gen = utils.generator(train_samples, train_target, batch_size)
     val_gen = utils.generator(val_samples, val_target, batch_size)
@@ -226,7 +239,7 @@ for sim_ind, comb in enumerate(combs):
                         callbacks=callbacks_list, validation_data=val_gen,
                         validation_steps=val_steps)
 
-    model = utils.create_rnn(train_samples.shape[2], units1, units2, dropout, nclasses, learning_rate, metrics_list)
+    model = utils.create_rnn(nfeats, units1, units2, dropout, nclasses, learning_rate, loss, metrics_list)
     model.load_weights(os.path.join(os.getcwd(), 'models', name))
 
     # model = models.load_model(os.path.join(os.getcwd(), 'models', name), custom_objects={
@@ -237,7 +250,7 @@ for sim_ind, comb in enumerate(combs):
     test_results = model.evaluate(test_gen, steps=test_samples.shape[0] // batch_size)
     for i in range(len(metrics_name)):
         print('TEST {}: {:.4f}'.format(metrics_name[i].upper(), test_results[i]))
-    utils.plot_results(history.history, test_results, metrics_name, tag=name, subplots=(2, 2))
+    utils.plot_results(history.history, test_results, metrics_name, loss_name, tag=name, subplots=(2, 2))
 
     test_gen = utils.generator(test_samples, test_target, batch_size)
     preds = model.predict(test_gen, steps=test_steps)

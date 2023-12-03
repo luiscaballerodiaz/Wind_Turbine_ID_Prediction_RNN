@@ -9,7 +9,7 @@ from keras.utils import plot_model
 import os
 
 
-def create_rnn(input_shape, units1, units2, dropout, output_shape, lr, metrics_list):
+def create_rnn(input_shape, units1, units2, dropout, output_shape, lr, loss, metrics_list):
     inp = layers.Input(shape=(None, input_shape))
     if units2 == 0:
         rnn = layers.GRU(units1, activation='relu', return_sequences=False, dropout=dropout, recurrent_dropout=dropout)(
@@ -22,14 +22,13 @@ def create_rnn(input_shape, units1, units2, dropout, output_shape, lr, metrics_l
     outputs = layers.Dense(output_shape, activation='softmax')(rnn)
     model = models.Model(inp, outputs)
     model.summary()
-    plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', 'Model Diagram.png'))
+    #plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', 'Model Diagram.png'))
 
-    model.compile(optimizer=optimizers.Adam(learning_rate=lr), loss='categorical_crossentropy',
-                  metrics=metrics_list)
+    model.compile(optimizer=optimizers.Adam(learning_rate=lr), metrics=metrics_list, loss=loss)
     return model
 
 
-def plot_turbine_ids(data, tag, maxbars=-1):
+def plot_turbine_ids(data, tag, folder='plots', maxbars=-1):
     fig, ax = plt.subplots(figsize=(20, 10))
     plt.rcParams['font.size'] = 14
     data = pd.Series(data)
@@ -45,7 +44,7 @@ def plot_turbine_ids(data, tag, maxbars=-1):
     ax.bar_label(ax.containers[0])
     ax.grid(visible=True)
     fig.tight_layout()
-    plt.savefig(os.path.join(os.getcwd(), 'plots', tag + '.png'), bbox_inches='tight')
+    plt.savefig(os.path.join(os.getcwd(), folder, tag + '.png'), bbox_inches='tight')
     plt.close()
 
 
@@ -89,7 +88,7 @@ def stratified_train_val_test_split(y, train_split, val_split):
     return train_list, val_list, test_list
 
 
-def plot_results(data, test, met, tag='', subplots=None):
+def plot_results(data, test, met, loss, tag='', subplots=None):
     if tag != '':
         tag = ' ' + tag
     if subplots is None:
@@ -98,20 +97,22 @@ def plot_results(data, test, met, tag='', subplots=None):
     ax = axes.ravel()
     best_ind = np.argmin(data['val_loss'])
     for i in range(len(met)):
+        if i > 0:
+            loss = met[i]
         ax[i].plot(range(1, len(data[met[i]]) + 1), data[met[i]], ls='-', lw=2, color='b',
-                   label='Train ' + met[i])
+                   label='Train ' + loss)
         ax[i].plot(range(1, len(data[met[i]]) + 1), data['val_' + met[i]], ls='--', lw=2, color='b',
-                   label='Validation ' + met[i])
+                   label='Validation ' + loss)
         ax[i].set_xlabel('EPOCHS', fontweight='bold', fontsize=12)
         ax[i].set_ylabel(met[i].upper(), fontweight='bold', fontsize=12)
-        text_str = '\nBEST MODEL TRAIN ' + met[i].upper() + ' = {:.4f}'.format(data[met[i]][best_ind])
-        text_str += '\nBEST MODEL VAL ' + met[i].upper() + ' = {:.4f}'.format(data['val_' + met[i]][best_ind])
-        text_str += '\nBEST MODEL TEST ' + met[i].upper() + ' = {:.4f}'.format(test[i])
+        text_str = '\nBEST MODEL TRAIN ' + loss.upper() + ' = {:.4f}'.format(data[met[i]][best_ind])
+        text_str += '\nBEST MODEL VAL ' + loss.upper() + ' = {:.4f}'.format(data['val_' + met[i]][best_ind])
+        text_str += '\nBEST MODEL TEST ' + loss.upper() + ' = {:.4f}'.format(test[i])
         ax[i].set_title(text_str, fontweight='bold', fontsize=12)
         ax[i].grid(visible=True)
         ax[i].legend()
     text_str = '\nBEST MODEL SAVED AT EPOCH {}'.format(best_ind + 1)
-    plt.suptitle('SIMULATION RESULTS' + tag.upper() + text_str, fontweight='bold', fontsize=18)
+    plt.suptitle('SIMULATION RESULTS' + tag.upper() + text_str, fontweight='bold', fontsize=16)
     fig.tight_layout()
     plt.savefig(os.path.join(os.getcwd(), 'plots', 'Simulation results' + tag + '.png'), bbox_inches='tight')
     plt.close()
@@ -149,7 +150,7 @@ def plot_confusion_matrix(conf_matrix, tag=''):
     acc_tot = round(100 * ok / tot, 1)
     acc_macro = round(acc / conf_matrix.shape[0], 1)
     fig.suptitle('CONFUSION MATRIX' + tag + ' - Weight Acc=' + str(acc_tot) + '% Macro Acc=' + str(acc_macro)
-                 + '%', weight='bold', fontsize=16)
+                 + '%', weight='bold', fontsize=14)
     ax.set_title(text_str, weight='bold', fontsize=14)
     ax.tick_params(axis='both', labelsize=12)
     fig.tight_layout()
