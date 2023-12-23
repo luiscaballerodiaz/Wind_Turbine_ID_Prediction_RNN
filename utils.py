@@ -5,6 +5,8 @@ from keras import layers
 from keras import optimizers
 from keras import models
 import collections
+import keras.backend as K
+import tensorflow as tf
 from keras.utils import plot_model
 import openpyxl
 import os
@@ -25,12 +27,12 @@ def autoencoder(input_shape, units, dropout, nclasses, embedding_shape, lr, loss
     outputs = layers.TimeDistributed(layers.Dense(nclasses, 'softmax'))(rnn)
     model = models.Model([inp_data, inp_emb, inp_decoder], outputs)
     model.summary()
-    plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', 'Model Diagram.png'))
+    plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', 'Autoencoder Model Diagram.png'))
     model.compile(optimizer=optimizers.Adam(learning_rate=lr), metrics=metrics_list, loss=loss)
     return model
 
 
-def create_rnn(input_shape, units1, units2, dropout, out_shape, embedding_shape, lr, loss, metrics_list):
+def create_rnn(input_shape, units1, units2, dropout, out_shape, embedding_shape, lr, loss, metrics_list, activation):
     inp_data = layers.Input(shape=(None, input_shape), name='Input_data')
     if embedding_shape is None:
         inp_emb = layers.Input(shape=(None, out_shape), name='Input_ids')
@@ -44,10 +46,16 @@ def create_rnn(input_shape, units1, units2, dropout, out_shape, embedding_shape,
     else:
         rnn = layers.GRU(units1, 'relu', return_sequences=True, dropout=dropout, recurrent_dropout=dropout)(merged)
         rnn = layers.GRU(units2, 'relu', return_sequences=False, dropout=dropout, recurrent_dropout=dropout)(rnn)
-    outputs = layers.Dense(out_shape, 'softmax')(rnn)
+    outputs = layers.Dense(out_shape, activation)(rnn)
     model = models.Model([inp_data, inp_emb], outputs)
     model.summary()
-    plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', 'Model Diagram.png'))
+    if activation == 'softmax':
+        name = 'RNN Categorical Model Diagram.png'
+    elif activation == 'sigmoid':
+        name = 'RNN Multilabel Model Diagram.png'
+    else:
+        name = 'RNN Model Diagram.png'
+    plot_model(model, show_shapes=True, to_file=os.path.join(os.getcwd(), 'plots', name))
     model.compile(optimizer=optimizers.Adam(learning_rate=lr), metrics=metrics_list, loss=loss)
     return model
 
@@ -163,9 +171,26 @@ def plot_results(data, test, met, loss, tag=''):
     return train_data, val_data
 
 
-def plot_confusion_matrix(conf_matrix, tag=''):
+def plot_confusion_matrix(trues, preds, n, tag=''):
     if tag != '':
         tag = ' ' + tag
+    if len(preds.shape) == 2:
+        seq = False
+    else:
+        seq = True
+    y_pred = np.argmax(preds, axis=-1)
+    y_true = np.argmax(trues, axis=-1)
+    y_true = y_true.astype(int)
+    confusion_matrix = np.zeros([n, n])
+    if seq:
+        for i in range(y_pred.shape[0]):
+            for j in range(y_pred.shape[1]):
+                confusion_matrix[y_pred[i, j], y_true[i, j]] += 1
+    else:
+        for i in range(y_pred.shape[0]):
+            confusion_matrix[y_pred[i], y_true[i]] += 1
+    conf_matrix = confusion_matrix.astype(int)
+
     fig, ax = plt.subplots(figsize=(20, 10))
     plt.pcolormesh(conf_matrix, cmap=plt.cm.cool)
     #plt.colorbar()
@@ -191,11 +216,10 @@ def plot_confusion_matrix(conf_matrix, tag=''):
     acc = np.empty([conf_matrix.shape[0]])
     prec = np.empty([conf_matrix.shape[0]])
     f1 = np.empty([conf_matrix.shape[0]])
-    epsilon = 1e-100
     for i in range(conf_matrix.shape[0]):
-        acc[i] = min(100, max(0, 100 * conf_matrix[i, i] / (np.sum(conf_matrix[:, i]) + epsilon)))
-        prec[i] = min(100, max(0, 100 * conf_matrix[i, i] / (np.sum(conf_matrix[i, :]) + epsilon)))
-        f1[i] = 2 / (1 / (prec[i] + epsilon) + 1 / (acc[i] + epsilon))
+        acc[i] = min(100, max(0, 100 * conf_matrix[i, i] / (np.sum(conf_matrix[:, i]) + K.epsilon())))
+        prec[i] = min(100, max(0, 100 * conf_matrix[i, i] / (np.sum(conf_matrix[i, :]) + K.epsilon())))
+        f1[i] = 2 / (1 / (prec[i] + K.epsilon()) + 1 / (acc[i] + K.epsilon()))
     acc_macro = np.round(np.mean(acc), 1)
     prec_macro = np.round(np.mean(prec), 1)
     f1_macro = np.round(np.mean(f1), 1)
@@ -220,10 +244,10 @@ def plot_confusion_matrix(conf_matrix, tag=''):
     fig.tight_layout()
     plt.savefig(os.path.join(os.getcwd(), 'plots', 'Confusion Matrix' + tag + '.png'), bbox_inches='tight')
     plt.close()
-    return acc, prec
+    return acc, prec, f1
 
 
-def update_results_excel(train, val, test, acc, prec, data, file='Results'):
+def update_results_excel(train, val, test, acc, prec, f1, data, file='Results'):
     try:
         excel_file = openpyxl.load_workbook(file + '.xlsx')
         sheet = excel_file[excel_file.sheetnames[0]]
@@ -242,12 +266,12 @@ def update_results_excel(train, val, test, acc, prec, data, file='Results'):
         sheet.cell(row=9, column=1).value = 'learning rate'
         sheet.cell(row=10, column=1).value = 'batch size'
         sheet.cell(row=11, column=1).value = 'lookback'
-        sheet.cell(row=12, column=1).value = 'TRAIN weight loss'
-        sheet.cell(row=13, column=1).value = 'VAL weight loss'
-        sheet.cell(row=14, column=1).value = 'TEST weight loss'
-        sheet.cell(row=15, column=1).value = 'TRAIN std loss'
-        sheet.cell(row=16, column=1).value = 'VAL std loss'
-        sheet.cell(row=17, column=1).value = 'TEST std loss'
+        sheet.cell(row=12, column=1).value = 'TRAIN loss'
+        sheet.cell(row=13, column=1).value = 'VAL loss'
+        sheet.cell(row=14, column=1).value = 'TEST loss'
+        sheet.cell(row=15, column=1).value = 'TRAIN F1 macro'
+        sheet.cell(row=16, column=1).value = 'VAL F1 macro'
+        sheet.cell(row=17, column=1).value = 'TEST F1 macro'
         sheet.cell(row=18, column=1).value = 'TRAIN TPR macro'
         sheet.cell(row=19, column=1).value = 'VAL TPR macro'
         sheet.cell(row=20, column=1).value = 'TEST TPR macro'
@@ -257,14 +281,16 @@ def update_results_excel(train, val, test, acc, prec, data, file='Results'):
         sheet.cell(row=24, column=1).value = 'TRAIN prec macro'
         sheet.cell(row=25, column=1).value = 'VAL prec macro'
         sheet.cell(row=26, column=1).value = 'TEST prec macro'
-        sheet.cell(row=27, column=1).value = 'TRAIN F1 macro'
-        sheet.cell(row=28, column=1).value = 'VAL F1 macro'
-        sheet.cell(row=29, column=1).value = 'TEST F1 macro'
+        sheet.cell(row=27, column=1).value = 'TRAIN prec total'
+        sheet.cell(row=28, column=1).value = 'VAL prec total'
+        sheet.cell(row=29, column=1).value = 'TEST prec total'
         c = 30
         for i in range(acc.shape[0]):
             sheet.cell(row=c, column=1).value = 'TEST ACC ID' + str(i)
             c += 1
             sheet.cell(row=c, column=1).value = 'TEST PREC ID' + str(i)
+            c += 1
+            sheet.cell(row=c, column=1).value = 'TEST F1 ID' + str(i)
             c += 1
     # Update Excel file in the next empty col
     col = len([cell for cell in sheet[1] if cell.value is not None]) + 1
@@ -280,16 +306,12 @@ def update_results_excel(train, val, test, acc, prec, data, file='Results'):
     sheet.cell(row=9, column=col).value = data[8]
     sheet.cell(row=10, column=col).value = data[9]
     sheet.cell(row=11, column=col).value = data[10]
-    if 'weight' in data[3]:
-        ind = [0, 1]
-    else:
-        ind = [1, 0]
-    sheet.cell(row=12, column=col).value = train[ind[0]]
-    sheet.cell(row=13, column=col).value = val[ind[0]]
-    sheet.cell(row=14, column=col).value = test[ind[0]]
-    sheet.cell(row=15, column=col).value = train[ind[1]]
-    sheet.cell(row=16, column=col).value = val[ind[1]]
-    sheet.cell(row=17, column=col).value = test[ind[1]]
+    sheet.cell(row=12, column=col).value = train[0]
+    sheet.cell(row=13, column=col).value = val[0]
+    sheet.cell(row=14, column=col).value = test[0]
+    sheet.cell(row=15, column=col).value = train[1]
+    sheet.cell(row=16, column=col).value = val[1]
+    sheet.cell(row=17, column=col).value = test[1]
     sheet.cell(row=18, column=col).value = train[2]
     sheet.cell(row=19, column=col).value = val[2]
     sheet.cell(row=20, column=col).value = test[2]
@@ -308,4 +330,48 @@ def update_results_excel(train, val, test, acc, prec, data, file='Results'):
         c += 1
         sheet.cell(row=c, column=col).value = round(prec[i], 1)
         c += 1
+        sheet.cell(row=c, column=col).value = round(f1[i], 1)
+        c += 1
     excel_file.save(file + '.xlsx')
+
+
+def classification_report(y_true, y_pred, n, multilabel=False, tag=''):
+    if tag != '':
+        tag = ' ' + tag
+    if multilabel:
+        y_pred = K.round(y_pred)
+    else:
+        y_pred /= K.max(y_pred, axis=-1, keepdims=True)  # assign 1 to the predicted class
+    results = np.zeros([n + 2, 7])
+    for c in range(n):
+        results[c, 0] = c
+    ax = [i for i in range(len(K.int_shape(y_pred)) - 1)]
+    results[:n, 1] = K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=ax)
+    results[:n, 2] = K.sum(tf.cast(tf.logical_and(K.not_equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=ax)
+    results[:n, 3] = K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.not_equal(y_pred, 1)), 'float32'), axis=ax)
+    results[:n, 4] = 100 * results[:n, 1] / (K.epsilon() + results[:n, 1] + results[:n, 3])
+    results[:n, 5] = 100 * results[:n, 1] / (K.epsilon() + results[:n, 1] + results[:n, 2])
+    results[:n, 6] = 2 / ((1 / (K.epsilon() + results[:n, 4])) + (1 / (K.epsilon() + results[:n, 5])))
+    results[n, 4] = 100 * np.sum(results[:n, 1]) / (np.sum(results[:n, 1]) + np.sum(results[:n, 3]))
+    results[n + 1, 4] = np.mean(results[:n, 4])
+    results[n, 5] = 100 * np.sum(results[:n, 1]) / (np.sum(results[:n, 1]) + np.sum(results[:n, 2]))
+    results[n + 1, 5] = np.mean(results[:n, 5])
+    results[n, 6] = 2 / ((1 / (K.epsilon() + results[n, 4])) + (1 / (K.epsilon() + results[n, 5])))
+    results[n + 1, 6] = np.mean(results[:n, 6])
+    df = pd.DataFrame(results, columns=['Class', 'TP', 'FP', 'FN', 'TPR %', 'Precision %', 'F1 %'])
+    df = df.round(decimals=1)
+    df.iloc[n, 0] = 'TOTAL'
+    df.iloc[n + 1, 0] = 'MACRO'
+    for ind in range(1, 4):
+        df.iloc[n, ind] = ' '
+        df.iloc[n + 1, ind] = ' '
+    df.set_index('Class', inplace=True)
+    fig, ax = plt.subplots(figsize=(8, 1))
+    t = ax.table(cellText=df.values, rowLabels=df.index, colLabels=df.columns, cellLoc='center')
+    t.auto_set_font_size(False)
+    t.set_fontsize(10)
+    ax.set_title('Classification Report' + tag)
+    ax.axis('off')
+    ax.axis('tight')
+    plt.savefig(os.path.join(os.getcwd(), 'plots', 'Classification Report' + tag + '.png'), bbox_inches='tight')
+    plt.close()
