@@ -25,7 +25,7 @@ output_seq = 3
 #                   2 - mean weighted categorical crossentropy loss
 #                   3 - mix weighted categorical crossentropy loss
 # critical_ids, critical_multiplier
-sims = [[128, 0.2, -1, 0.001, 512, 100, 5, 0, [], 1]]
+sims = [[128, 0.2, -1, 0.001, 512, 100, 10, 1, [6, 8], 2]]
 
 data_path = os.path.join(os.getcwd(), 'data')
 data_files = [f for f in os.listdir(data_path) if '.csv' in f]
@@ -59,9 +59,9 @@ for sim_ind, comb in enumerate(sims):
         data_pre = 'onehot'
         id_emb_out = None
     inp = [units, data_pre, loss_name, multiplier, crit_ids, max_samples, dropout, lrate, batch_size, lookback]
-    name = 'AUTOENCODER ' + str(inp[0]) + ', ' + inp[1] + ', ' + inp[2] + ' (' + str(inp[3]) + ' x ' + \
+    name = 'AUTOENCODER ' + str(inp[0]) + ', ' + inp[1] + ', ' + inp[2] + ' (' + str(inp[3]) + 'x' + \
            str(inp[4]) + '), max_samples=' + str(inp[5]) + ', dropout=' + str(inp[6]) + ', lr=' + str(inp[7]) + \
-           ', batch=' + str(inp[8]) + ' and lookback=' + str(inp[9])
+           ', batch=' + str(inp[8]) + ' & lookback=' + str(inp[9])
     print('\nSIMULATION NUMBER: {}'.format(sim_ind + 1))
     print('SIMULATION DETAILS: {}'.format(name))
 
@@ -158,20 +158,28 @@ for sim_ind, comb in enumerate(sims):
     train_wind = wind[train_indexes]
     val_wind = wind[val_indexes]
     test_wind = wind[test_indexes]
-    t = val_target[:, 0]
-    for ipred in range(1, val_target.shape[1]):
-        t = np.concatenate((t, val_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Validation data', folder='plots')
-    t = test_target[:, 0]
-    for ipred in range(1, test_target.shape[1]):
-        t = np.concatenate((t, test_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Test data', folder='plots')
-    t = train_target[:, 0]
-    for ipred in range(1, train_target.shape[1]):
-        t = np.concatenate((t, train_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Train data', folder='plots')
 
-    # Calculate weights per ID based on total train data
+    # Target
+    train_target = to_categorical(train_target, num_classes=nclasses)
+    val_target = to_categorical(val_target, num_classes=nclasses)
+    test_target = to_categorical(test_target, num_classes=nclasses)
+
+    utils.plot_turbine_ids(np.sum(val_target, axis=[0, 1]), 'Validation data', folder='plots', series=False)
+    utils.plot_turbine_ids(np.sum(test_target, axis=[0, 1]), 'Test data', folder='plots', series=False)
+    utils.plot_turbine_ids(np.sum(train_target, axis=[0, 1]), 'Train data', folder='plots', series=False)
+
+    # Undersampling training set
+    if max_samples != -1:
+        targets = np.sum(train_target, axis=1)
+        indexes = utils.undersampling(targets.tolist(), max_samples, nclasses)
+        train_target = train_target[indexes]
+        train_ids = train_ids[indexes]
+        train_time = train_time[indexes]
+        train_power = train_power[indexes]
+        train_wind = train_wind[indexes]
+        utils.plot_turbine_ids(np.sum(targets, axis=0), 'Train data under sampled', folder='plots', series=False)
+
+    # Calculate weights per ID based on train data
     c = dict(collections.Counter(t))
     c = dict(sorted(c.items(), key=lambda item: item[0], reverse=False))
     train_target_counter = list(c.values())
@@ -188,27 +196,6 @@ for sim_ind, comb in enumerate(sims):
     for i in crit_ids:
         weightsID[i] *= multiplier
     weightsID = np.array(weightsID)
-
-    # Undersampling training set
-    if max_samples != -1:
-        indexes = []
-        c = dict(collections.Counter(train_target[:, 0]))
-        for i, tgt in enumerate(train_target[:, 0]):
-            if c[tgt] <= max_samples:
-                indexes.append(i)
-            else:
-                c[tgt] -= 1
-        train_target = train_target[indexes]
-        train_ids = train_ids[indexes]
-        train_time = train_time[indexes]
-        train_power = train_power[indexes]
-        train_wind = train_wind[indexes]
-        utils.plot_turbine_ids(train_target[0], 'Train data under sampled', folder='plots')
-
-    # Target
-    train_target = to_categorical(train_target, num_classes=nclasses)
-    val_target = to_categorical(val_target, num_classes=nclasses)
-    test_target = to_categorical(test_target, num_classes=nclasses)
 
     # Input data
     scaler = StandardScaler()
@@ -290,9 +277,9 @@ for sim_ind, comb in enumerate(sims):
     test_gen = utils.autoencoder_generator([test_inputdata, test_ids], test_target, batch_size)
     preds = model.predict(test_gen, steps=test_steps)
     for j in range(preds.shape[1]):
-        tag = name + ' prediction ' + str(j+1)
-        utils.classification_report(test_target[:, j, :], preds[:, j, :], nclasses, multilabel=False, tag=tag)
-        utils.plot_confusion_matrix(test_target[:, j, :], preds[:, j, :], nclasses, tag=tag)
-    utils.classification_report(test_target, preds, nclasses, multilabel=False, tag=name + ' prediction total')
-    utils.plot_confusion_matrix(test_target, preds, nclasses, tag=name + ' prediction total')
+        tag = name + ' - Prediction ' + str(j+1)
+        utils.classification_report(test_target[:, j, :], preds[:, j, :], multilabel=False, tag=tag)
+        utils.plot_confusion_matrix(test_target[:, j, :], preds[:, j, :], tag=tag)
+    utils.classification_report(test_target, preds, multilabel=False, tag=name + ' - Prediction total')
+    utils.plot_confusion_matrix(test_target, preds, tag=name + ' - Prediction total')
 

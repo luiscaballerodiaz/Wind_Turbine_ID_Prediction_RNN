@@ -5,7 +5,6 @@ import utils
 import custom_metrics
 import os
 import random
-import keras.backend as K
 from keras import callbacks
 from keras.utils import to_categorical
 from sklearn.preprocessing import StandardScaler
@@ -25,10 +24,8 @@ output_seq = 3
 #                   1 - ln weighted categorical crossentropy loss
 #                   2 - mean weighted categorical crossentropy loss
 #                   3 - mix weighted categorical crossentropy loss
-# critical_ids, critical_multiplier
-sims = [[128, 0, 0.2, -1, 0.001, 512, 100, 5, 2, [], 1],
-        [128, 0, 0.2, -1, 0.001, 512, 100, 5, 3, [], 1],
-        [128, 0, 0.2, 50000, 0.001, 512, 100, 5, 0, [], 1]]
+# critical_ids, critical_multiplier, threshold (0 to disable real application approach)
+sims = [[128, 0, 0.2, -1, 0.001, 512, 100, 10, 1, [6, 8], 2, 0.5]]
 
 data_path = os.path.join(os.getcwd(), 'data')
 data_files = [f for f in os.listdir(data_path) if '.csv' in f]
@@ -48,6 +45,7 @@ for sim_ind, comb in enumerate(sims):
     loss_weights = comb[8]
     crit_ids = comb[9]
     multiplier = comb[10]
+    threshold = comb[11]
 
     if loss_weights == 0:
         loss_name = 'unweighted_loss'
@@ -63,9 +61,13 @@ for sim_ind, comb in enumerate(sims):
         data_pre = 'onehot'
         id_emb_out = None
     inp = [units1, units2, data_pre, loss_name, multiplier, crit_ids, max_samples, dropout, lrate, batch_size, lookback]
-    name = 'RNN MULTILABEL ' + str(inp[0]) + '-' + str(inp[1]) + ', ' + inp[2] + ', ' + inp[3] + ' (' + str(inp[4]) + ' x ' + \
-           str(inp[5]) + '), max_samples=' + str(inp[6]) + ', dropout=' + str(inp[7]) + ', lr=' + str(inp[8]) + \
-           ', batch=' + str(inp[9]) + ' and lookback=' + str(inp[10])
+    name = 'RNN MULTILABEL ' + str(inp[0]) + '-' + str(inp[1]) + '_' + inp[2] + '_' + inp[3] + '_(' + str(inp[4]) + \
+           'x' + str(inp[5]) + ')_samples=' + str(inp[6]) + '_dropout=' + str(inp[7]) + '_lr=' + str(inp[8]) + \
+           '_batch=' + str(inp[9]) + '_lookback=' + str(inp[10])
+    if threshold > 0:
+        inp.append(threshold)
+        name += '_th=' + str(inp[11])
+
     print('\nSIMULATION NUMBER: {}'.format(sim_ind + 1))
     print('SIMULATION DETAILS: {}'.format(name))
 
@@ -162,23 +164,31 @@ for sim_ind, comb in enumerate(sims):
     train_wind = wind[train_indexes]
     val_wind = wind[val_indexes]
     test_wind = wind[test_indexes]
-    t = val_target[:, 0]
-    for ipred in range(1, val_target.shape[1]):
-        t = np.concatenate((t, val_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Validation data', folder='plots')
-    t = test_target[:, 0]
-    for ipred in range(1, test_target.shape[1]):
-        t = np.concatenate((t, test_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Test data', folder='plots')
-    t = train_target[:, 0]
-    for ipred in range(1, train_target.shape[1]):
-        t = np.concatenate((t, train_target[:, ipred]), axis=0)
-    utils.plot_turbine_ids(t, 'Train data', folder='plots')
 
-    # Calculate weights per ID based on total train data
-    c = dict(collections.Counter(t))
-    c = dict(sorted(c.items(), key=lambda item: item[0], reverse=False))
-    train_target_counter = list(c.values())
+    # Target
+    train_target = to_categorical(train_target, num_classes=nclasses)
+    val_target = to_categorical(val_target, num_classes=nclasses)
+    test_target = to_categorical(test_target, num_classes=nclasses)
+    train_target = np.clip(np.sum(train_target, axis=1), 0, 1)
+    val_target = np.clip(np.sum(val_target, axis=1), 0, 1)
+    test_target = np.clip(np.sum(test_target, axis=1), 0, 1)
+
+    utils.plot_turbine_ids(np.sum(val_target, axis=0), 'Validation data', folder='plots', series=False)
+    utils.plot_turbine_ids(np.sum(test_target, axis=0), 'Test data', folder='plots', series=False)
+    utils.plot_turbine_ids(np.sum(train_target, axis=0), 'Train data', folder='plots', series=False)
+
+    # Undersampling training set
+    if max_samples != -1:
+        indexes = utils.undersampling(train_target.tolist(), max_samples, nclasses)
+        train_target = train_target[indexes]
+        train_ids = train_ids[indexes]
+        train_time = train_time[indexes]
+        train_power = train_power[indexes]
+        train_wind = train_wind[indexes]
+        utils.plot_turbine_ids(np.sum(train_target, axis=0), 'Train data under sampled', folder='plots', series=False)
+
+    # Calculate weights per ID based on train data
+    train_target_counter = np.sum(train_target, axis=0)
     weightsID_ln = [1 + np.log(np.max(train_target_counter) / val) for val in list(train_target_counter)]
     weightsID_mean = [np.mean(train_target_counter) / val for val in list(train_target_counter)]
     if loss_weights == 0:
@@ -192,30 +202,6 @@ for sim_ind, comb in enumerate(sims):
     for i in crit_ids:
         weightsID[i] *= multiplier
     weightsID = np.array(weightsID)
-
-    # Undersampling training set
-    if max_samples != -1:
-        indexes = []
-        c = dict(collections.Counter(train_target[:, 0]))
-        for i, tgt in enumerate(train_target[:, 0]):
-            if c[tgt] <= max_samples:
-                indexes.append(i)
-            else:
-                c[tgt] -= 1
-        train_target = train_target[indexes]
-        train_ids = train_ids[indexes]
-        train_time = train_time[indexes]
-        train_power = train_power[indexes]
-        train_wind = train_wind[indexes]
-        utils.plot_turbine_ids(train_target[:, 0], 'Train data under sampled', folder='plots')
-
-    # Target
-    train_target = to_categorical(train_target, num_classes=nclasses)
-    val_target = to_categorical(val_target, num_classes=nclasses)
-    test_target = to_categorical(test_target, num_classes=nclasses)
-    train_target = K.clip(K.sum(train_target, axis=1), 0, 1)
-    val_target = K.clip(K.sum(val_target, axis=1), 0, 1)
-    test_target = K.clip(K.sum(test_target, axis=1), 0, 1)
 
     # Input data
     scaler = StandardScaler()
@@ -257,11 +243,16 @@ for sim_ind, comb in enumerate(sims):
     print('TEST STEPS: {} (real value = {:.2f})'.format(test_steps, test_inputdata.shape[0]/batch_size))
 
     loss = custom_metrics.weighted_crossentropy_loss(weights=weightsID, binary=True, name=loss_name)
-    mets = [custom_metrics.MacroF1(name='F1_macro', in_classes=nclasses, multilabel=True),
-            custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses, multilabel=True),
-            custom_metrics.TotalTPR(name='TPR_total', multilabel=True),
-            custom_metrics.MacroPrecision(name='Precision_macro', in_classes=nclasses, multilabel=True),
-            custom_metrics.TotalPrecision(name='Precision_total', multilabel=True)]
+    if threshold > 0:
+        mets = [custom_metrics.MultilabelTotalAccuracy(name='Total_multilabel_acc', threshold=threshold),
+                custom_metrics.MultilabelTotalPrecision(name='Total_multilabel_precision', threshold=threshold),
+                custom_metrics.PredictionRatio(name='Pred_ratio', threshold=threshold)]
+    else:
+        mets = [custom_metrics.MacroF1(name='F1_macro', in_classes=nclasses, multilabel=True),
+                custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses, multilabel=True),
+                custom_metrics.TotalTPR(name='TPR_total', multilabel=True),
+                custom_metrics.MacroPrecision(name='Precision_macro', in_classes=nclasses, multilabel=True),
+                custom_metrics.TotalPrecision(name='Precision_total', multilabel=True)]
 
     metrics_name = ['loss']
     for m in mets:
@@ -296,6 +287,9 @@ for sim_ind, comb in enumerate(sims):
 
     test_gen = utils.generator([test_inputdata, test_ids], test_target, batch_size)
     preds = model.predict(test_gen, steps=test_steps)
-    utils.classification_report(test_target, preds, nclasses, multilabel=True, tag=name)
+    if threshold > 0:
+        utils.preds_distribution(test_target, preds, threshold=threshold, tag=name)
+    else:
+        utils.classification_report(test_target, preds, multilabel=True, tag=name)
 
 

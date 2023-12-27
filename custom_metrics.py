@@ -10,14 +10,15 @@ def weighted_crossentropy_loss(weights, binary=False, name='loss'):
     the weight multiplier for class x"""
     def fn(y_true, y_pred):
         nclass = weights.shape[0]
-        w_pu = (nclass * weights) / sum(weights)  # scale weights to sum altogether equal to nclasses
         y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())  # clip to prevent inf
         if binary:  # BINARY --> predictions are the probability between [0, 1] to be 1
-            weights_inv = 1 / weights
-            w_pu_inv = (nclass * weights_inv) / sum(weights_inv)  # scale weights to sum altogether equal to nclasses
-            # return -K.sum((y_true * K.log(y_pred)) * w_pu + ((1 - y_true) * K.log(1 - y_pred)) * w_pu_inv, axis=-1)
-            return -K.sum((y_true * K.log(y_pred)) * w_pu + ((1 - y_true) * K.log(1 - y_pred)), axis=-1)
+            weights_bin = np.sqrt(weights)
+            w_pu = (nclass * weights_bin) / np.sum(weights_bin)  # scale weights to sum altogether equal to nclasses
+            weights_inv = 1 / weights_bin  # calculate inverse weights to apply to 0
+            w_pu_inv = (nclass * weights_inv) / np.sum(weights_inv)  # scale weights to sum altogether equal to nclasses
+            return -K.sum((y_true * K.log(y_pred)) * w_pu + ((1 - y_true) * K.log(1 - y_pred)) * w_pu_inv, axis=-1)
         else:  # CATEGORICAL --> predictions are a probability distribution among all classes summing in total 1
+            w_pu = (nclass * weights) / np.sum(weights)  # scale weights to sum altogether equal to nclasses
             y_pred /= K.sum(y_pred, axis=-1, keepdims=True)
             return -K.sum(y_true * K.log(y_pred) * w_pu, axis=-1)
     fn.__name__ = name
@@ -148,17 +149,41 @@ class MacroF1(tf.keras.metrics.Metric):
         self.tp.assign(np.zeros(self.nclasses))
 
 
-class MultilabelTotalAccuracy(tf.keras.metrics.Metric):
-    def __init__(self, name='multilabel_total_acc', **kwargs):
+class MultilabelTotalPrecision(tf.keras.metrics.Metric):
+    def __init__(self, name='multilabel_total_prec', threshold=0.5, **kwargs):
         super().__init__(name=name, **kwargs)
+        self.th = threshold
+        self.prec = self.add_weight(name='multilabel_total_prec', initializer='zeros')
+        self.prec_tot = self.add_weight(name='multilabel_total_prec_tot', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred_max = K.max(y_pred, axis=-1, keepdims=True)
+        y_pred = tf.where(y_pred > self.th, y_pred / y_pred_max, 0)
+        self.prec.assign_add(K.sum(K.clip(K.sum(tf.cast(tf.logical_and(
+            K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=-1), 0, 1)))
+        self.prec_tot.assign_add(K.epsilon() + K.sum(K.clip(K.sum(y_pred, axis=-1), 0, 1)))
+
+    def result(self):
+        return self.prec / self.prec_tot
+
+    def reset_state(self):
+        self.prec.assign(0)
+        self.prec_tot.assign(0)
+
+
+class MultilabelTotalAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='multilabel_total_acc', threshold=0.5, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.th = threshold
         self.acc = self.add_weight(name='multilabel_total_acc', initializer='zeros')
         self.acc_tot = self.add_weight(name='multilabel_total_acc_tot', initializer='zeros')
 
     def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.cast(K.equal(y_pred, K.max(y_pred, axis=-1, keepdims=True)), 'float32')
+        y_pred_max = K.max(y_pred, axis=-1, keepdims=True)
+        y_pred = tf.where(y_pred > self.th, y_pred / y_pred_max, 0)
         self.acc.assign_add(K.sum(K.clip(K.sum(tf.cast(tf.logical_and(
             K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=-1), 0, 1)))
-        self.acc_tot.assign_add(K.epsilon() + K.sum(K.clip(K.sum(tf.cast(y_true, 'float32'), axis=-1), 0, 1)))
+        self.acc_tot.assign_add(K.epsilon() + K.sum(K.clip(K.sum(y_true, axis=-1), 0, 1)))
 
     def result(self):
         return self.acc / self.acc_tot
@@ -166,4 +191,25 @@ class MultilabelTotalAccuracy(tf.keras.metrics.Metric):
     def reset_state(self):
         self.acc.assign(0)
         self.acc_tot.assign(0)
+
+
+class PredictionRatio(tf.keras.metrics.Metric):
+    def __init__(self, name='pred_ratio', threshold=0.5, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.th = threshold
+        self.pred = self.add_weight(name='pred_ratio', initializer='zeros')
+        self.pred_tot = self.add_weight(name='pred_ratio_tot', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred_max = K.max(y_pred, axis=-1, keepdims=True)
+        y_pred = tf.where(y_pred > self.th, y_pred / y_pred_max, 0)
+        self.pred.assign_add(K.sum(K.clip(K.sum(tf.cast(K.equal(y_pred, 1), 'float32'), axis=-1), 0, 1)))
+        self.pred_tot.assign_add(K.epsilon() + K.sum(K.clip(K.sum(y_true, axis=-1), 0, 1)))
+
+    def result(self):
+        return self.pred / self.pred_tot
+
+    def reset_state(self):
+        self.pred.assign(0)
+        self.pred_tot.assign(0)
 

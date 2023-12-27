@@ -8,6 +8,7 @@ import collections
 import keras.backend as K
 import tensorflow as tf
 from keras.utils import plot_model
+import random
 import openpyxl
 import os
 
@@ -93,17 +94,23 @@ def autoencoder_generator(samples, target, batch_samples):
         yield [gen_inputdata, gen_ids, gen_decoder], gen_target
 
 
-def plot_turbine_ids(data, tag, folder='plots', maxbars=-1):
+def plot_turbine_ids(data, tag, folder='plots', maxbars=-1, series=True):
     fig, ax = plt.subplots(figsize=(20, 10))
     plt.rcParams['font.size'] = 14
     data = pd.Series(data)
     data = data.astype(int)
-    if maxbars == -1:
-        maxbars = data.value_counts().shape[0] + 1
-    data.value_counts()[:maxbars].plot(kind='bar', ax=ax)
+    datapoints = data.to_numpy().sum()
+    if series:
+        if maxbars == -1:
+            maxbars = data.value_counts().shape[0]
+        data.value_counts().sort_index()[:maxbars].plot(kind='bar', ax=ax)
+    else:
+        if maxbars == -1:
+            maxbars = data.shape[0]
+        data[:maxbars].plot(kind='bar', ax=ax)
     ax.set_ylabel('NUMBER OF OCCURRENCES', fontsize=16, fontweight='bold')
     ax.set_xlabel('ID MESSAGES', fontsize=16, fontweight='bold')
-    ax.set_title(tag.upper() + '(' + str(data.shape[0]) + ' datapoints)', fontweight='bold', fontsize=24)
+    ax.set_title(tag.upper() + ' (' + str(datapoints) + ' datapoints)', fontweight='bold', fontsize=24)
     ax.tick_params(axis='x', labelrotation=70)
     ax.tick_params(axis='both', labelsize=14)
     ax.bar_label(ax.containers[0])
@@ -171,13 +178,14 @@ def plot_results(data, test, met, loss, tag=''):
     return train_data, val_data
 
 
-def plot_confusion_matrix(trues, preds, n, tag=''):
+def plot_confusion_matrix(trues, preds, tag=''):
     if tag != '':
         tag = ' ' + tag
     if len(preds.shape) == 2:
         seq = False
     else:
         seq = True
+    n = K.int_shape(preds)[-1]
     y_pred = np.argmax(preds, axis=-1)
     y_true = np.argmax(trues, axis=-1)
     y_true = y_true.astype(int)
@@ -192,8 +200,7 @@ def plot_confusion_matrix(trues, preds, n, tag=''):
     conf_matrix = confusion_matrix.astype(int)
 
     fig, ax = plt.subplots(figsize=(20, 10))
-    plt.pcolormesh(conf_matrix, cmap=plt.cm.cool)
-    #plt.colorbar()
+    plt.pcolormesh(conf_matrix, cmap=plt.get_cmap('cool'))  # plt.colorbar()
     labels = np.arange(conf_matrix.shape[0])
     yrange = [x + 0.5 for x in range(conf_matrix.shape[0])]
     xrange = [x + 0.5 for x in range(conf_matrix.shape[1])]
@@ -299,8 +306,10 @@ def update_results_excel(train, val, test, acc, prec, f1, data, file='Results'):
     sheet.cell(row=3, column=col).value = data[2]
     sheet.cell(row=4, column=col).value = data[3]
     sheet.cell(row=5, column=col).value = data[4]
-    if data[5]:
-        sheet.cell(row=6, column=col).value = data[5]
+    txt = ''
+    for i in data[5]:
+        txt += str(i) + '-'
+    sheet.cell(row=6, column=col).value = txt[:-1]
     sheet.cell(row=7, column=col).value = data[6]
     sheet.cell(row=8, column=col).value = data[7]
     sheet.cell(row=9, column=col).value = data[8]
@@ -335,13 +344,14 @@ def update_results_excel(train, val, test, acc, prec, f1, data, file='Results'):
     excel_file.save(file + '.xlsx')
 
 
-def classification_report(y_true, y_pred, n, multilabel=False, tag=''):
+def classification_report(y_true, y_pred, multilabel=False, tag=''):
     if tag != '':
         tag = ' ' + tag
     if multilabel:
         y_pred = K.round(y_pred)
     else:
         y_pred /= K.max(y_pred, axis=-1, keepdims=True)  # assign 1 to the predicted class
+    n = K.int_shape(y_pred)[-1]
     results = np.zeros([n + 2, 7])
     for c in range(n):
         results[c, 0] = c
@@ -352,9 +362,9 @@ def classification_report(y_true, y_pred, n, multilabel=False, tag=''):
     results[:n, 4] = 100 * results[:n, 1] / (K.epsilon() + results[:n, 1] + results[:n, 3])
     results[:n, 5] = 100 * results[:n, 1] / (K.epsilon() + results[:n, 1] + results[:n, 2])
     results[:n, 6] = 2 / ((1 / (K.epsilon() + results[:n, 4])) + (1 / (K.epsilon() + results[:n, 5])))
-    results[n, 4] = 100 * np.sum(results[:n, 1]) / (np.sum(results[:n, 1]) + np.sum(results[:n, 3]))
+    results[n, 4] = 100 * np.sum(results[:n, 1]) / (K.epsilon() + np.sum(results[:n, 1]) + np.sum(results[:n, 3]))
     results[n + 1, 4] = np.mean(results[:n, 4])
-    results[n, 5] = 100 * np.sum(results[:n, 1]) / (np.sum(results[:n, 1]) + np.sum(results[:n, 2]))
+    results[n, 5] = 100 * np.sum(results[:n, 1]) / (K.epsilon() + np.sum(results[:n, 1]) + np.sum(results[:n, 2]))
     results[n + 1, 5] = np.mean(results[:n, 5])
     results[n, 6] = 2 / ((1 / (K.epsilon() + results[n, 4])) + (1 / (K.epsilon() + results[n, 5])))
     results[n + 1, 6] = np.mean(results[:n, 6])
@@ -375,3 +385,69 @@ def classification_report(y_true, y_pred, n, multilabel=False, tag=''):
     ax.axis('tight')
     plt.savefig(os.path.join(os.getcwd(), 'plots', 'Classification Report' + tag + '.png'), bbox_inches='tight')
     plt.close()
+
+
+def preds_distribution(y_true, y_pred, threshold=0.5, tag=''):
+    if tag != '':
+        tag = ' ' + tag
+    y_pred_max = K.max(y_pred, axis=-1, keepdims=True)
+    y_pred = tf.where(y_pred > threshold, y_pred / y_pred_max, 0)
+    n = K.int_shape(y_pred)[-1]
+    results = np.zeros([n + 2, 7])
+    for c in range(n):
+        results[c, 0] = c
+    ax = [i for i in range(len(K.int_shape(y_pred)) - 1)]
+    results[:n, 1] = K.sum(tf.cast(K.equal(y_true, 1), 'float32'), axis=ax)
+    results[n, 1] = np.sum(results[:n, 1])
+    results[:n, 2] = K.sum(tf.cast(K.equal(y_pred, 1), 'float32'), axis=ax)
+    results[n, 2] = np.sum(results[:n, 2])
+    results[:n, 3] = 100 * results[:n, 2] / (K.epsilon() + np.sum(results[:n, 2]))
+    results[n, 3] = np.sum(results[:n, 3])
+    results[:n, 4] = K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=ax)
+    results[n, 4] = np.sum(results[:n, 4])
+    results[:n, 5] = K.sum(tf.cast(tf.logical_and(K.equal(y_true, 0), K.equal(y_pred, 1)), 'float32'), axis=ax)
+    results[n, 5] = np.sum(results[:n, 5])
+    results[:n, 6] = 100 * results[:n, 4] / (K.epsilon() + results[:n, 2])
+    results[n, 6] = 100 * np.sum(results[:n, 4]) / (K.epsilon() + np.sum(results[:n, 2]))
+    results[n + 1, 6] = np.mean(results[:n, 6])
+    df = pd.DataFrame(results, columns=['Class', 'Trues', 'Preds', 'Preds Dist %', 'TP', 'FP', 'Precision %'])
+    df = df.round(decimals=1)
+    df.iloc[n, 0] = 'TOTAL'
+    df.iloc[n + 1, 0] = 'MACRO'
+    for ind in range(1, 6):
+        df.iloc[n + 1, ind] = ' '
+    df.set_index('Class', inplace=True)
+    fig, ax = plt.subplots(figsize=(8, 1))
+    t = ax.table(cellText=df.values, rowLabels=df.index, colLabels=df.columns, cellLoc='center')
+    t.auto_set_font_size(False)
+    t.set_fontsize(10)
+    rows = K.int_shape(y_pred)[0]
+    ok = K.sum(K.clip(K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32'), axis=-1), 0, 1))
+    predicted = K.sum(K.clip(K.sum(tf.cast(K.equal(y_pred, 1), 'float32'), axis=-1), 0, 1))
+    ok = tf.cast(ok, 'int32').numpy()
+    predicted = tf.cast(predicted, 'int32').numpy()
+    sub = 'Total Accuracy = ' + str(round(100*ok/rows, 1)) + '%, Relative Accuracy = ' + \
+          str(round(100*ok/predicted, 1)) + '% and Prediction Rate = ' + str(round(100*predicted/rows, 1)) + \
+          '% (Total samples ' + str(rows) + ' - Predicted samples ' + str(predicted) + ' - OK samples ' + str(ok) + ')'
+    ax.set_title('Prediction Distribution' + tag + '\n\n' + sub)
+    ax.axis('off')
+    ax.axis('tight')
+    plt.savefig(os.path.join(os.getcwd(), 'plots', 'Prediction Distribution' + tag + '.png'), bbox_inches='tight')
+    plt.close()
+
+
+def undersampling(target_list, max_samples, nclasses=2, random_seed=42):
+    current = [0] * nclasses
+    index_list = []
+    for ind, tgt in enumerate(target_list):
+        for pos in range(len(tgt)):
+            if tgt[pos] >= 1 and current[pos] >= max_samples:
+                break
+        else:
+            index_list.append(ind)
+            for pos in range(len(tgt)):
+                if tgt[pos] >= 1:
+                    current[pos] += 1
+    random.seed(random_seed)
+    random.shuffle(index_list)
+    return index_list
