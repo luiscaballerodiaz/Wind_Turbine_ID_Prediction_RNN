@@ -1,16 +1,12 @@
 import pandas as pd
-import numpy as np
-import collections
 import utils
+import display
 import custom_metrics
 import os
-import random
 from keras import callbacks
 from keras.utils import to_categorical
-from sklearn.preprocessing import StandardScaler
 
-
-# Parametrization
+# PARAMETRIZATION
 min_occ = 30
 train_size = 0.8
 val_size = 0.1
@@ -18,200 +14,91 @@ epochs = 50
 patience_stop = 4
 lookforward = 1
 
-# units1, units2, dropout, max_samples, learning_rate, batch, embedding_size (0 = onehot), lookback,
+# SIMULATION INPUT DATA
+# sims = [application, output_seq, units1, units2, dropout, max_samples, learning_rate, batch, embedding_size, lookback,
+# weighted_loss, critical_ids, critical_multiplier, threshold]
+#
+# application --> 0 - RNN
+#                 1 - RNN multilabel
+#                 2 - Autoencoder
+# output_seq --> output sequence length (only applicable for RNN multilabel and autoencoder, assigned to 1 for RNN)
+# units1, units2 --> number of neurons of first and second RNN layers respectively (units2 = 0 for single RNN layer)
+# dropout --> value for both dropout and recurrent dropout
+# max_samples --> limit number of samples for a single ID by applying undersampling (-1 to define no limit)
+# learning_rate --> simulation learning rate
+# batch --> simulation batch size
+# embedding_size --> size for the ID input embedding layer (0 to use onehot instead embedding)
+# lookback --> number of past samples to focus when predicting future IDs
 # weighted_loss --> 0 - standard categorical crossentropy loss
 #                   1 - ln weighted categorical crossentropy loss
 #                   2 - mean weighted categorical crossentropy loss
 #                   3 - mix weighted categorical crossentropy loss
-# critical_ids, critical_multiplier
-sims = [[128, 0, 0.2, -1, 0.001, 512, 100, 10, 1, [6, 8], 2]]
+# critical_ids, critical_multiplier --> list of IDs to apply the defined extra multiplier
+# threshold --> Select prediction with max prob only if > threshold (-1 to disable, assigned to -1 for RNNAutoencoder)
+sims = [[0, 3, 128, 0, 0.2, -1, 0.001, 512, 100, 10, 1, [6, 8], 2, 0.5]]
+print('NUMBER OF SIMULATIONS: {}'.format(len(sims)))
 
+# READ INPUT DATA
 data_path = os.path.join(os.getcwd(), 'data')
 data_files = [f for f in os.listdir(data_path) if '.csv' in f]
 turb_names = [int(name.partition('.')[0]) for name in data_files]
 
-print('NUMBER OF SIMULATIONS: {}'.format(len(sims)))
+# MAIN LOOP FOR EACH SIMULATION INPUT DATA
 for sim_ind, comb in enumerate(sims):
 
-    units1 = comb[0]
-    units2 = comb[1]
-    dropout = comb[2]
-    max_samples = comb[3]
-    lrate = comb[4]
-    batch_size = comb[5]
-    id_emb_out = comb[6]
-    lookback = comb[7]
-    loss_weights = comb[8]
-    crit_ids = comb[9]
-    multiplier = comb[10]
+    # DECODE INPUT DATA
+    app = comb[0]
+    output_seq = comb[1]
+    units1 = comb[2]
+    units2 = comb[3]
+    dropout = comb[4]
+    max_samples = comb[5]
+    lrate = comb[6]
+    batch_size = comb[7]
+    emb_size = comb[8]
+    lookback = comb[9]
+    loss_weights = comb[10]
+    crit_ids = comb[11]
+    multiplier = comb[12]
+    threshold = comb[13]
+    act_layer, name, autoenc, data_pre, loss_name, output_seq, units2, threshold = utils.config_params(
+        app, loss_weights, emb_size, output_seq, units2, threshold)
 
-    if loss_weights == 0:
-        loss_name = 'unweighted_loss'
-    elif loss_weights == 1:
-        loss_name = 'ln_weighted_loss'
-    elif loss_weights == 2:
-        loss_name = 'mean_weighted_loss'
-    else:
-        loss_name = 'mix_weighted_loss'
-    if id_emb_out > 0:
-        data_pre = str(id_emb_out) + 'emb'
-    else:
-        data_pre = 'onehot'
-        id_emb_out = None
+    # TAG SIMULATION FOR REFERENCE
     inp = [units1, units2, data_pre, loss_name, multiplier, crit_ids, max_samples, dropout, lrate, batch_size, lookback]
-    name = 'RNN ' + str(inp[0]) + '-' + str(inp[1]) + ', ' + inp[2] + ', ' + inp[3] + ' (' + str(inp[4]) + 'x' + \
-           str(inp[5]) + '), max_samples=' + str(inp[6]) + ', dropout=' + str(inp[7]) + ', lr=' + str(inp[8]) + \
-           ', batch=' + str(inp[9]) + ' & lookback=' + str(inp[10])
-    print('\nSIMULATION NUMBER: {}'.format(sim_ind + 1))
-    print('SIMULATION DETAILS: {}'.format(name))
+    name = utils.simulation_tag(name, inp, threshold, sim_ind)
 
-    to_remove = []
+    # DATA READING, PREPROCESSING, PREPARATION AND SET SPLITS
     df_list = [pd.read_csv(os.path.join(data_path, file), names=['time', 'ID', 'wind_speed', 'power'])
                for file in data_files]
-    for i, df in enumerate(df_list):
-        df['ID'].replace([213, 214], 212, inplace=True)
-        df['ID'].replace([340, 341], 145, inplace=True)
-        df['ID'].replace([1099, 1100], 1098, inplace=True)
-        df['ID'].replace([1614, 1615], 1613, inplace=True)
-        df['ID'].replace([2001, 2002], 2000, inplace=True)
-        df['ID'].replace([3523, 3524], 3522, inplace=True)
-        df = df[df['ID'].shift() != df['ID']]
-        c = dict(collections.Counter(df['ID'].values.tolist()))
-        c = dict(sorted(c.items(), key=lambda item: item[1], reverse=True))
-        for ids in range(6000):
-            if ids not in c.keys() or c[ids] < min_occ:
-                to_remove.append(ids)
-        df_list[i] = df
+    ids_to_remove, df_list = utils.data_scrubbing(df_list, min_occ, id_max=6000)
+    total_rows, df_list, id_dict, nclasses = utils.feature_engineering(df_list, ids_to_remove, lookback, lookforward)
+    ids, time, power, wind, target = utils.data_preparation(total_rows, lookback, lookforward, df_list, output_seq,
+                                                            id_dict, turb_names, shuffle=True)
+    train_data, val_data, test_data = utils.stratified_train_val_test_split(target, train_size, val_size, power, ids,
+                                                                            wind, time)
 
-    input_data = 0
-    for i, df in enumerate(df_list):
-        df = df[~df['ID'].isin(to_remove)]
-        df = df[df['ID'].shift() != df['ID']]
-        df['time'] = pd.to_datetime(df['time'])
-        df['time'] = df['time'] - df['time'].shift()
-        df['time'] = df['time'].dt.total_seconds()
-        df.iloc[0, df.columns.get_loc('time')] = 0
-        df['power'] = df['power'].apply(lambda row: np.where(row < 10, 0, 1))
-        df['wind_speed'] = df['wind_speed'].apply(lambda row: np.where(row < 8, 0, np.where(row < 16, 1, 2)))
-        df[['wind1', 'wind2', 'wind3']] = pd.get_dummies(df['wind_speed'])
-        df.drop(columns='wind_speed', inplace=True)
-        input_data += df.shape[0]
-        df_list[i] = df
+    # TARGET PROCESSING
+    train_target, val_target, test_target, train_data, weightsID = utils.target_processing(
+        train_data, val_data[0], test_data[0], app, nclasses, max_samples, loss_weights, crit_ids, multiplier)
 
-    ids = df_list[0]['ID'].unique()
-    nclasses = len(ids)
-    print('\nTotal number of IDs: {}'.format(nclasses))
-    print('List of IDs: {}'.format(sorted(ids)))
-    ordinal_ids = {}
-    for index, real_id in enumerate(sorted(ids)):
-        ordinal_ids[real_id] = index
-    print('IDs to ordinal values: {}'.format(ordinal_ids))
-    input_data -= (lookback + lookforward - 1) * len(data_files)
-    print('\nNormalized total data rows: {}'.format(input_data))
-
-    cursor = 0
-    ids = np.empty([input_data, lookback])
-    time = np.empty([input_data, lookback])
-    power = np.empty([input_data, lookback])
-    wind = np.empty([input_data, lookback, 3])
-    target = np.empty([input_data])
-    for i, df in enumerate(df_list):
-        df['ID'] = df['ID'].map(ordinal_ids)
-        utils.plot_turbine_ids(df['ID'], 'Turbine number ' + str(turb_names[i]), folder='plots\\turbines')
-        narray = df.to_numpy()
-        for j in range(lookback, narray.shape[0]-lookforward+1):
-            time[cursor] = narray[j-lookback:j, 0]
-            ids[cursor] = narray[j-lookback:j, 1]
-            power[cursor] = narray[j-lookback:j, 2]
-            wind[cursor] = narray[j-lookback:j, 3:]
-            target[cursor] = narray[j+lookforward-1, 1]
-            cursor += 1
-    utils.plot_turbine_ids(target, 'Total data', folder='plots')
-
-    # Shuffle data randomly
-    random.seed(42)
-    list_random_index = list(range(input_data))
-    random.shuffle(list_random_index)
-    target = target[list_random_index]
-    ids = ids[list_random_index]
-    time = time[list_random_index]
-    power = power[list_random_index]
-    wind = wind[list_random_index]
-
-    # Split between train, val and test sets
-    train_indexes, val_indexes, test_indexes = utils.stratified_train_val_test_split(target, train_size, val_size)
-    train_target = target[train_indexes]
-    val_target = target[val_indexes]
-    test_target = target[test_indexes]
-    train_ids = ids[train_indexes]
-    val_ids = ids[val_indexes]
-    test_ids = ids[test_indexes]
-    train_time = time[train_indexes]
-    val_time = time[val_indexes]
-    test_time = time[test_indexes]
-    train_power = power[train_indexes]
-    val_power = power[val_indexes]
-    test_power = power[test_indexes]
-    train_wind = wind[train_indexes]
-    val_wind = wind[val_indexes]
-    test_wind = wind[test_indexes]
-
-    # Target
-    train_target = to_categorical(train_target, num_classes=nclasses)
-    val_target = to_categorical(val_target, num_classes=nclasses)
-    test_target = to_categorical(test_target, num_classes=nclasses)
-
-    utils.plot_turbine_ids(np.sum(val_target, axis=0), 'Validation data', folder='plots', series=False)
-    utils.plot_turbine_ids(np.sum(test_target, axis=0), 'Test data', folder='plots', series=False)
-    utils.plot_turbine_ids(np.sum(train_target, axis=0), 'Train data', folder='plots', series=False)
-
-    # Undersampling training set
-    if max_samples != -1:
-        indexes = utils.undersampling(train_target.tolist(), max_samples, nclasses)
-        train_target = train_target[indexes]
-        train_ids = train_ids[indexes]
-        train_time = train_time[indexes]
-        train_power = train_power[indexes]
-        train_wind = train_wind[indexes]
-        utils.plot_turbine_ids(np.sum(train_target, axis=0), 'Train data under sampled', folder='plots', series=False)
-
-    # Calculate weights per ID based on train data
-    train_target_counter = np.sum(train_target, axis=0)
-    weightsID_ln = [1 + np.log(np.max(train_target_counter) / val) for val in list(train_target_counter)]
-    weightsID_mean = [np.mean(train_target_counter) / val for val in list(train_target_counter)]
-    if loss_weights == 0:
-        weightsID = np.ones(nclasses)
-    elif loss_weights == 1:
-        weightsID = weightsID_ln
-    elif loss_weights == 2:
-        weightsID = weightsID_mean
-    else:
-        weightsID = np.mean(np.array([weightsID_mean, weightsID_ln]), axis=0)
-    for i in crit_ids:
-        weightsID[i] *= multiplier
-    weightsID = np.array(weightsID)
-
-    # Input data
-    scaler = StandardScaler()
-    scaler.fit_transform(train_time)
-    scaler.transform(val_time)
-    scaler.transform(test_time)
-    train_time.shape += 1,
-    val_time.shape += 1,
-    test_time.shape += 1,
-    train_power.shape += 1,
-    val_power.shape += 1,
-    test_power.shape += 1,
-    train_inputdata = np.concatenate((train_time, train_power, train_wind), axis=-1)
-    val_inputdata = np.concatenate((val_time, val_power, val_wind), axis=-1)
-    test_inputdata = np.concatenate((test_time, test_power, test_wind), axis=-1)
+    # INPUT DATA PROCESSING
+    train_inputdata, val_inputdata, test_inputdata = utils.inputdata_processing(train_data, val_data, test_data)
 
     # IDs
-    if id_emb_out is None:
-        train_ids = to_categorical(train_ids, num_classes=nclasses)
-        val_ids = to_categorical(val_ids, num_classes=nclasses)
-        test_ids = to_categorical(test_ids, num_classes=nclasses)
+    train_ids = train_data[1]
+    val_ids = val_data[1]
+    test_ids = test_data[1]
+    if emb_size == 0:
+        train_ids = to_categorical(train_data[1], num_classes=nclasses)
+        val_ids = to_categorical(val_data[1], num_classes=nclasses)
+        test_ids = to_categorical(test_data[1], num_classes=nclasses)
 
+    # DISPLAY DATA INPUT SUMMARY
+    in_feats = train_inputdata.shape[2]
+    train_steps = -(-train_inputdata.shape[0] // batch_size)
+    val_steps = -(-val_inputdata.shape[0] // batch_size)
+    test_steps = -(-test_inputdata.shape[0] // batch_size)
     print('\nTRAIN INPUT DATA SHAPE: {}'.format(train_inputdata.shape))
     print('VAL INPUT DATA SHAPE: {}'.format(val_inputdata.shape))
     print('TEST INPUT DATA SHAPE: {}'.format(test_inputdata.shape))
@@ -221,21 +108,34 @@ for sim_ind, comb in enumerate(sims):
     print('TRAIN TARGET SHAPE: {}'.format(train_target.shape))
     print('VAL TARGET SHAPE: {}'.format(val_target.shape))
     print('TEST TARGET SHAPE: {}'.format(test_target.shape))
+    print('\nTRAIN STEPS: {} (real value = {:.2f})'.format(train_steps, train_inputdata.shape[0] / batch_size))
+    print('VAL STEPS: {} (real value = {:.2f})'.format(val_steps, val_inputdata.shape[0] / batch_size))
+    print('TEST STEPS: {} (real value = {:.2f})'.format(test_steps, test_inputdata.shape[0] / batch_size))
 
-    in_feats = train_inputdata.shape[2]
-    train_steps = -(-train_inputdata.shape[0] // batch_size)
-    val_steps = -(-val_inputdata.shape[0] // batch_size)
-    test_steps = -(-test_inputdata.shape[0] // batch_size)
-    print('\nTRAIN STEPS: {} (real value = {:.2f})'.format(train_steps, train_inputdata.shape[0]/batch_size))
-    print('VAL STEPS: {} (real value = {:.2f})'.format(val_steps, val_inputdata.shape[0]/batch_size))
-    print('TEST STEPS: {} (real value = {:.2f})'.format(test_steps, test_inputdata.shape[0]/batch_size))
+    # LOSS DEFINITION
+    if app == 1:
+        loss = custom_metrics.weighted_crossentropy_loss(weights=weightsID, binary=True, name=loss_name)
+    else:
+        loss = custom_metrics.weighted_crossentropy_loss(weights=weightsID, binary=False, name=loss_name)
 
-    loss = custom_metrics.weighted_crossentropy_loss(weights=weightsID, binary=False, name=loss_name)
-    mets = [custom_metrics.MacroF1(name='F1_macro', in_classes=nclasses, multilabel=False),
-            custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses, multilabel=False),
-            custom_metrics.TotalTPR(name='TPR_total', multilabel=False),
-            custom_metrics.MacroPrecision(name='Precision_macro', in_classes=nclasses, multilabel=False),
-            custom_metrics.TotalPrecision(name='Precision_total', multilabel=False)]
+    # METRIC DEFINITION
+    if app == 1:
+        if threshold != -1:
+            mets = [custom_metrics.MultilabelTotalAccuracy(name='Total_multilabel_acc', threshold=threshold),
+                    custom_metrics.MultilabelTotalPrecision(name='Total_multilabel_precision', threshold=threshold),
+                    custom_metrics.PredictionRatio(name='Pred_ratio', threshold=threshold)]
+        else:
+            mets = [custom_metrics.MacroF1(name='F1_macro', in_classes=nclasses, multilabel=True),
+                    custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses, multilabel=True),
+                    custom_metrics.TotalTPR(name='TPR_total', multilabel=True),
+                    custom_metrics.MacroPrecision(name='Precision_macro', in_classes=nclasses, multilabel=True),
+                    custom_metrics.TotalPrecision(name='Precision_total', multilabel=True)]
+    else:
+        mets = [custom_metrics.MacroF1(name='F1_macro', in_classes=nclasses, multilabel=False),
+                custom_metrics.MacroTPR(name='TPR_macro', in_classes=nclasses, multilabel=False),
+                custom_metrics.TotalTPR(name='TPR_total', multilabel=False),
+                custom_metrics.MacroPrecision(name='Precision_macro', in_classes=nclasses, multilabel=False),
+                custom_metrics.TotalPrecision(name='Precision_total', multilabel=False)]
 
     metrics_name = ['loss']
     for m in mets:
@@ -247,29 +147,48 @@ for sim_ind, comb in enumerate(sims):
                       callbacks.ModelCheckpoint(os.path.join(os.getcwd(), 'models', name), monitor='val_loss',
                                                 save_best_only=True, mode='min', save_weights_only=True, verbose=1)]
 
-    model = utils.create_rnn(in_feats, units1, units2, dropout, nclasses, id_emb_out, lrate, loss, mets, 'softmax')
+    # CREATE MODEL
+    train_gen = utils.generator([train_inputdata, train_ids], train_target, batch_size, autoencoder=autoenc)
+    val_gen = utils.generator([val_inputdata, val_ids], val_target, batch_size, autoencoder=autoenc)
+    if autoenc:
+        model = utils.create_autoencoder(in_feats, units1, dropout, nclasses, emb_size, lrate, loss, mets)
+    else:
+        model = utils.create_rnn(in_feats, units1, units2, dropout, nclasses, emb_size, lrate, loss, mets, act_layer)
 
-    train_gen = utils.generator([train_inputdata, train_ids], train_target, batch_size)
-    val_gen = utils.generator([val_inputdata, val_ids], val_target, batch_size)
-
+    # TRAIN MODEL
     history = model.fit(train_gen, steps_per_epoch=train_steps, epochs=epochs,
                         callbacks=callbacks_list, validation_data=val_gen, validation_steps=val_steps)
 
-    model = utils.create_rnn(in_feats, units1, units2, dropout, nclasses, id_emb_out, lrate, loss, mets, 'softmax')
+    # LOAD BEST MODEL AND EVALUATE PERFORMANCE IN TEST SET
+    train_gen = utils.generator([train_inputdata, train_ids], train_target, batch_size, autoencoder=autoenc)
+    val_gen = utils.generator([val_inputdata, val_ids], val_target, batch_size, autoencoder=autoenc)
+    if autoenc:
+        model = utils.create_autoencoder(in_feats, units1, dropout, nclasses, emb_size, lrate, loss, mets)
+    else:
+        model = utils.create_rnn(in_feats, units1, units2, dropout, nclasses, emb_size, lrate, loss, mets, act_layer)
     model.load_weights(os.path.join(os.getcwd(), 'models', name))
-
-    # model = models.load_model(os.path.join(os.getcwd(), 'models', name), custom_objects={
-    #     'TPR_macro': custom_metrics.MacroTPR(name=metrics_name[2], in_classes=nclasses),
-    #     'TPR_weight': custom_metrics.WeightTPR(name=metrics_name[3], in_classes=nclasses)})
-
-    test_gen = utils.generator([test_inputdata, test_ids], test_target, batch_size)
+    test_gen = utils.generator([test_inputdata, test_ids], test_target, batch_size, autoencoder=autoenc)
     test_results = model.evaluate(test_gen, steps=test_steps)
     for i in range(len(metrics_name)):
         print('TEST {}: {:.4f}'.format(metrics_name[i].upper(), test_results[i]))
-    train_results, val_results = utils.plot_results(history.history, test_results, metrics_name, loss_name, tag=name)
+    train_results, val_results = display.plot_results(history.history, test_results, metrics_name, loss_name, tag=name)
 
-    test_gen = utils.generator([test_inputdata, test_ids], test_target, batch_size)
+    # PREDICT TEST SET AND GENERATE OUTPUT DATA FILES
+    test_gen = utils.generator([test_inputdata, test_ids], test_target, batch_size, autoencoder=autoenc)
     preds = model.predict(test_gen, steps=test_steps)
-    utils.classification_report(test_target, preds, multilabel=False, tag=name)
-    id_acc, id_prec, id_f1 = utils.plot_confusion_matrix(test_target, preds, tag=name)
-    utils.update_results_excel(train_results, val_results, test_results, id_acc, id_prec, id_f1, inp)
+    if app == 0:
+        display.plot_classification_report(test_target, preds, multilabel=False, tag=name)
+        id_acc, id_prec, id_f1 = display.plot_confusion_matrix(test_target, preds, tag=name)
+        display.write_results_excel(train_results, val_results, test_results, id_acc, id_prec, id_f1, inp)
+    elif app == 1:
+        if threshold != -1:
+            display.plot_preds_distribution(test_target, preds, threshold=threshold, tag=name)
+        else:
+            display.plot_classification_report(test_target, preds, multilabel=True, tag=name)
+    else:
+        for j in range(preds.shape[1]):
+            tag = name + ' - Prediction ' + str(j + 1)
+            display.plot_classification_report(test_target[:, j, :], preds[:, j, :], multilabel=False, tag=tag)
+            display.plot_confusion_matrix(test_target[:, j, :], preds[:, j, :], tag=tag)
+        display.plot_classification_report(test_target, preds, multilabel=False, tag=name + ' - Prediction total')
+        display.plot_confusion_matrix(test_target, preds, tag=name + ' - Prediction total')

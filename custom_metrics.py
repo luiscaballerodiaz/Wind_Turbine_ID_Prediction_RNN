@@ -1,13 +1,17 @@
 import keras.backend as K
 import tensorflow as tf
 import numpy as np
-# K.print_tensor(tensor, message='\n \n', summarize=-1)
+# TO PRINT A TENSOR --> K.print_tensor(tensor, message='\nXXX\n', summarize=-1)
 
 
 def weighted_crossentropy_loss(weights, binary=False, name='loss'):
-    """A weighted version of crossentropy loss
-    weights: numpy array of shape np.array([C1, C2, C3, ... , Cn]) where n is the number of classes and Cx represents
-    the weight multiplier for class x"""
+    """
+    A weighted version of crossentropy loss.
+    :param weights: numpy array of shape np.array([C1, C2, C3, ... , Cn]) where n is the number of classes and Cx
+    represents the weight multiplier for class x
+    :param binary: False to calculate categorical crossentropy loss and True to calculate binary crossentropy loss
+    :param name: loss name to show during simulation and in output plots
+    """
     def fn(y_true, y_pred):
         nclass = weights.shape[0]
         y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())  # clip to prevent inf
@@ -26,6 +30,15 @@ def weighted_crossentropy_loss(weights, binary=False, name='loss'):
 
 
 class MacroTPR(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the macro average for True Positive Ratio.
+    Calculation is performed by dividing the number of real true predicted values vs total true values per each class
+    and then averaging all classes. Note it assigns same weight to all classes independently on the occurrence.
+    :param multilabel: True to round prediction (if > 0.5 --> 1 and -1 otherwise), so more than one prediction can be
+    true at the same time and False to force 1 only the prediction with max probability
+    :param in_classes: number of output classes
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='macro_tpr', in_classes=2, multilabel=False, **kwargs):
         super().__init__(name=name, **kwargs)
         self.nclasses = in_classes
@@ -51,6 +64,14 @@ class MacroTPR(tf.keras.metrics.Metric):
 
 
 class TotalTPR(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the total True Positive Ratio.
+    Calculation is performed by dividing the number of real true predicted values vs total true values, which
+    intrinsically weights all classes according to their occurrence.
+    :param multilabel: True to round prediction (if > 0.5 --> 1 and -1 otherwise), so more than one prediction can be
+    true at the same time and False to force 1 only the prediction with max probability
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='total_tpr', multilabel=False, **kwargs):
         super().__init__(name=name, **kwargs)
         self.multilabel = multilabel
@@ -73,30 +94,16 @@ class TotalTPR(tf.keras.metrics.Metric):
         self.tpr_tot.assign(0)
 
 
-class TotalPrecision(tf.keras.metrics.Metric):
-    def __init__(self, name='total_tpr', multilabel=False, **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.multilabel = multilabel
-        self.prec = self.add_weight(name='total_prec', initializer='zeros')
-        self.prec_tot = self.add_weight(name='total_prec_tot', initializer='zeros')
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        if self.multilabel:
-            y_pred = K.round(y_pred)
-        else:
-            y_pred /= K.max(y_pred, axis=-1, keepdims=True)  # assign 1 to the predicted class
-        self.prec.assign_add(K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32')))
-        self.prec_tot.assign_add(K.epsilon() + K.sum(tf.cast(K.equal(y_pred, 1), 'float32')))
-
-    def result(self):
-        return self.prec / self.prec_tot
-
-    def reset_state(self):
-        self.prec.assign(0)
-        self.prec_tot.assign(0)
-
-
 class MacroPrecision(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the macro average for precision.
+    Calculation is performed by dividing the number of real true predicted values vs total predicted values per each
+    class and then averaging all classes. Note it assigns same weight to all classes independently on the occurrence.
+    :param multilabel: True to round prediction (if > 0.5 --> 1 and -1 otherwise), so more than one prediction can be
+    true at the same time and False to force 1 only the prediction with max probability
+    :param in_classes: number of output classes
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='macro_precision', in_classes=2, multilabel=False, **kwargs):
         super().__init__(name=name, **kwargs)
         self.nclasses = in_classes
@@ -121,7 +128,47 @@ class MacroPrecision(tf.keras.metrics.Metric):
         self.prec_tot.assign(np.zeros(self.nclasses))
 
 
+class TotalPrecision(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the total precision.
+    Calculation is performed by dividing the number of real true predicted values vs total true predictions, which
+    intrinsically weights all classes according to their occurrence.
+    :param multilabel: True to round prediction (if > 0.5 --> 1 and -1 otherwise), so more than one prediction can be
+    true at the same time and False to force 1 only the prediction with max probability
+    :param name: metric name to show during simulation and in output plots
+    """
+    def __init__(self, name='total_tpr', multilabel=False, **kwargs):
+        super().__init__(name=name, **kwargs)
+        self.multilabel = multilabel
+        self.prec = self.add_weight(name='total_prec', initializer='zeros')
+        self.prec_tot = self.add_weight(name='total_prec_tot', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        if self.multilabel:
+            y_pred = K.round(y_pred)
+        else:
+            y_pred /= K.max(y_pred, axis=-1, keepdims=True)  # assign 1 to the predicted class
+        self.prec.assign_add(K.sum(tf.cast(tf.logical_and(K.equal(y_true, 1), K.equal(y_pred, 1)), 'float32')))
+        self.prec_tot.assign_add(K.epsilon() + K.sum(tf.cast(K.equal(y_pred, 1), 'float32')))
+
+    def result(self):
+        return self.prec / self.prec_tot
+
+    def reset_state(self):
+        self.prec.assign(0)
+        self.prec_tot.assign(0)
+
+
 class MacroF1(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the macro average for F1 score.
+    Calculation is performed by calculating the F1 score per each class and then averaging all classes. Note it assigns
+    same weight to all classes independently on the occurrence.
+    :param multilabel: True to round prediction (if > 0.5 --> 1 and -1 otherwise), so more than one prediction can be
+    true at the same time and False to force 1 only the prediction with max probability
+    :param in_classes: number of output classes
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='macro_f1', in_classes=2, multilabel=False, **kwargs):
         super().__init__(name=name, **kwargs)
         self.nclasses = in_classes
@@ -150,6 +197,14 @@ class MacroF1(tf.keras.metrics.Metric):
 
 
 class MultilabelTotalPrecision(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the Total Precision (expected to use with sigmoid output activation layer).
+    It focuses on predicting correctly at least one true output with the certainty defined in threshold input.
+    Calculation is performed by dividing the number of samples with at least a real true prediction > threshold vs
+    total number of predicted samples
+    :param threshold: minimum probability in pu to consider prediction as True
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='multilabel_total_prec', threshold=0.5, **kwargs):
         super().__init__(name=name, **kwargs)
         self.th = threshold
@@ -172,6 +227,14 @@ class MultilabelTotalPrecision(tf.keras.metrics.Metric):
 
 
 class MultilabelTotalAccuracy(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the Total Accuracy (expected to use with sigmoid output activation layer).
+    It focuses on predicting correctly at least one true output with the certainty defined in threshold input.
+    Calculation is performed by dividing the number of samples with at least a real true prediction > threshold vs
+    total number of samples
+    :param threshold: minimum probability in pu to consider prediction as True
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='multilabel_total_acc', threshold=0.5, **kwargs):
         super().__init__(name=name, **kwargs)
         self.th = threshold
@@ -194,6 +257,12 @@ class MultilabelTotalAccuracy(tf.keras.metrics.Metric):
 
 
 class PredictionRatio(tf.keras.metrics.Metric):
+    """
+    Metric class to calculate the Prediction Ratio (expected to use with sigmoid output activation layer).
+    Calculation is performed by dividing the number of samples with true predictions > threshold vs total samples
+    :param threshold: minimum probability in pu to consider prediction as True
+    :param name: metric name to show during simulation and in output plots
+    """
     def __init__(self, name='pred_ratio', threshold=0.5, **kwargs):
         super().__init__(name=name, **kwargs)
         self.th = threshold
@@ -212,4 +281,3 @@ class PredictionRatio(tf.keras.metrics.Metric):
     def reset_state(self):
         self.pred.assign(0)
         self.pred_tot.assign(0)
-
