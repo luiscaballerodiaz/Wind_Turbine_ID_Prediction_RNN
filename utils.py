@@ -147,11 +147,13 @@ def feature_engineering(df_list, to_remove, lookback, lookforward):
     return total_rows, df_list, ordinal_ids, total_ids
 
 
-def data_preparation(total_rows, lookback, lookforward, df_list, output_seq, id_dict, names, shuffle=True, rseed=42):
+def data_preparation(total_rows, total_ids, lookback, lookforward, df_list, output_seq, id_dict, names, shuffle=True,
+                     rseed=42):
     """
     Generate numpy arrays input samples according to lookback, lookforward and output_seq for the neural network.
     This data preparation process simplifies the data generator by only selecting the corresponding indexes.
     :param total_rows: total number of samples
+    :param total_ids: total number of IDs
     :param lookback: number of past steps to focus when making predictions
     :param lookforward: number of steps ahead to make predictions
     :param df_list: list of turbine dataframes
@@ -163,6 +165,7 @@ def data_preparation(total_rows, lookback, lookforward, df_list, output_seq, id_
     :return: numpy array for IDs and input data to introduce in the neural network
     """
     cursor = 0
+    ids_turb = np.empty([len(df_list), total_ids + 1])
     ids = np.empty([total_rows, lookback])
     time = np.empty([total_rows, lookback])
     power = np.empty([total_rows, lookback])
@@ -171,6 +174,8 @@ def data_preparation(total_rows, lookback, lookforward, df_list, output_seq, id_
     for i, df in enumerate(df_list):
         df['ID'] = df['ID'].map(id_dict)
         display.plot_turbine_ids(df['ID'], 'Turbine number ' + str(names[i]), folder='plots\\turbines')
+        ids_turb[names[i]-1, 0] = names[i]
+        ids_turb[names[i]-1, 1:] = 100 * df['ID'].value_counts().sort_index().to_numpy() / df.shape[0]
         narray = df.to_numpy()
         for j in range(lookback, narray.shape[0] - lookforward - output_seq + 2):
             time[cursor] = narray[j - lookback:j, 0]
@@ -179,6 +184,7 @@ def data_preparation(total_rows, lookback, lookforward, df_list, output_seq, id_
             wind[cursor] = narray[j - lookback:j, 3:]
             target[cursor] = narray[j + lookforward - 1:j + lookforward + output_seq - 1, 1]
             cursor += 1
+    display.table_turbine_ids(ids_turb, total_ids, folder='plots\\turbines')
     t = target[:, 0]
     for ipred in range(1, target.shape[1]):
         t = np.concatenate((t, target[:, ipred]), axis=0)

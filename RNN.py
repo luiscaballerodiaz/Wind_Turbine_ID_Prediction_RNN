@@ -73,8 +73,8 @@ for sim_ind, comb in enumerate(sims):
                for file in data_files]
     ids_to_remove, df_list = utils.data_scrubbing(df_list, min_occ, id_max=6000)
     total_rows, df_list, id_dict, nclasses = utils.feature_engineering(df_list, ids_to_remove, lookback, lookforward)
-    ids, time, power, wind, target = utils.data_preparation(total_rows, lookback, lookforward, df_list, output_seq,
-                                                            id_dict, turb_names, shuffle=True)
+    ids, time, power, wind, target = utils.data_preparation(total_rows, nclasses, lookback, lookforward, df_list,
+                                                            output_seq, id_dict, turb_names, shuffle=True)
     train_data, val_data, test_data = utils.stratified_train_val_test_split(target, train_size, val_size, power, ids,
                                                                             wind, time)
 

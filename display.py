@@ -280,6 +280,34 @@ def plot_preds_distribution(y_true, y_pred, threshold=0.5, tag=''):
     plt.close()
 
 
+def table_turbine_ids(id_data, tot_ids, folder='plots'):
+    """
+    Create a table indicating the turbine ID percentage distribution
+    :param id_data: turbine IDs data. It can be a series (series = True) or an ID counter (series = False)
+    :param tot_ids: plot reference name
+    :param folder: folder to store the plots
+    :return: None (it saves a png file with the plot)
+    """
+    id_class = []
+    for i in range(tot_ids):
+        id_class.append('ID' + str(i))
+    columns = ['Turbine Name']
+    columns.extend(id_class)
+    df = pd.DataFrame(id_data, columns=columns)
+    df[id_class] = df[id_class].round(decimals=1)
+    df['Turbine Name'] = df['Turbine Name'].round(0).astype(int)
+    df.set_index('Turbine Name', inplace=True)
+    fig, ax = plt.subplots(figsize=(15, 1))
+    t = ax.table(cellText=df.values, rowLabels=df.index, colLabels=df.columns, cellLoc='center')
+    t.auto_set_font_size(False)
+    t.set_fontsize(10)
+    ax.set_title('Turbine ID Failure Percentage Distribution')
+    ax.axis('off')
+    ax.axis('tight')
+    plt.savefig(os.path.join(os.getcwd(), folder, 'Turbine ID failure distribution.png'), bbox_inches='tight')
+    plt.close()
+
+
 def write_results_excel(train, val, test, acc, prec, f1, data, file='Results'):
     """
     Generate an output Excel file summarizing the simulation information as parametrization and sets results
