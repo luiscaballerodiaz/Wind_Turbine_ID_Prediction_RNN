@@ -87,7 +87,10 @@ def data_scrubbing(df_list, min_occ, id_max):
     :return: updated list of turbine dataframes and a list of uncommon IDs
     """
     to_remove = []
+    original_rows = 0
+    original_ids = set()
     for i, df in enumerate(df_list):
+        original_rows += df.shape[0]
         df['ID'].replace([213, 214], 212, inplace=True)
         df['ID'].replace([340, 341], 145, inplace=True)
         df['ID'].replace([1099, 1100], 1098, inplace=True)
@@ -97,10 +100,13 @@ def data_scrubbing(df_list, min_occ, id_max):
         df = df[df['ID'].shift() != df['ID']]
         c = dict(collections.Counter(df['ID'].values.tolist()))
         c = dict(sorted(c.items(), key=lambda item: item[1], reverse=True))
+        original_ids.update(list(c.keys()))
         for ids in range(id_max):
             if ids not in c.keys() or c[ids] < min_occ:
                 to_remove.append(ids)
         df_list[i] = df
+    print('\nOriginal total data rows: {}'.format(original_rows))
+    print('Original total IDs: {}'.format(len(original_ids)))
     return to_remove, df_list
 
 
@@ -130,14 +136,14 @@ def feature_engineering(df_list, to_remove, lookback, lookforward):
         df_list[i] = df
     ids = df_list[0]['ID'].unique()
     total_ids = len(ids)
-    print('\nTotal number of IDs: {}'.format(total_ids))
+    total_rows -= (lookback + lookforward - 1) * len(df_list)
+    print('\nNormalized total data rows: {}'.format(total_rows))
+    print('Total number of IDs: {}'.format(total_ids))
     print('List of IDs: {}'.format(sorted(ids)))
     ordinal_ids = {}
     for index, real_id in enumerate(sorted(ids)):
         ordinal_ids[real_id] = index
     print('IDs to ordinal values: {}'.format(ordinal_ids))
-    total_rows -= (lookback + lookforward - 1) * len(df_list)
-    print('\nNormalized total data rows: {}'.format(total_rows))
     return total_rows, df_list, ordinal_ids, total_ids
 
 
