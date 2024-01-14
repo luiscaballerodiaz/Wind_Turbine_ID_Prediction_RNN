@@ -313,9 +313,11 @@ def undersampling(target, max_samples, n, data, rseed=42):
         current = [0] * n
         index_list = []
         if len(target.shape) == 3:
-            target = np.sum(target, axis=1)
-        for ind in range(target.shape[0]):
-            tgt = target[ind]
+            target2d = np.sum(target, axis=1)
+        else:
+            target2d = target
+        for ind in range(target2d.shape[0]):
+            tgt = target2d[ind]
             for pos in range(n):
                 if tgt[pos] >= 1 and current[pos] >= max_samples:
                     break
@@ -323,7 +325,7 @@ def undersampling(target, max_samples, n, data, rseed=42):
                 index_list.append(ind)
                 for pos in range(n):
                     if tgt[pos] >= 1:
-                        current[pos] += 1
+                        current[pos] += tgt[pos]
         random.seed(rseed)
         random.shuffle(index_list)
         target = target[index_list]
@@ -343,6 +345,7 @@ def weight_calculation(target, axis, n, loss, crit_ids, multiplier):
     :return: class weights for loss calculation
     """
     train_target_counter = np.sum(target, axis=axis)
+    assert (train_target_counter.shape[0] == n)
     weights_id_ln = [1 + np.log(np.max(train_target_counter) / val) for val in list(train_target_counter)]
     weights_id_mean = [np.mean(train_target_counter) / val for val in list(train_target_counter)]
     if loss == 0:

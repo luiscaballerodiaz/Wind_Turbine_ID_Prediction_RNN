@@ -10,7 +10,7 @@ from keras.utils import to_categorical
 min_occ = 30
 train_size = 0.8
 val_size = 0.1
-epochs = 50
+epochs = 2
 patience_stop = 4
 lookforward = 1
 
@@ -34,7 +34,7 @@ lookforward = 1
 #                   2 - mean weighted categorical crossentropy loss
 #                   3 - mix weighted categorical crossentropy loss
 # critical_ids, critical_multiplier --> list of IDs to apply the defined extra multiplier
-# threshold --> Select prediction with max prob only if > threshold (-1 to disable, assigned to -1 for RNNAutoencoder)
+# threshold --> Select prediction with max prob only if > threshold (-1 to disable, assigned to -1 for RNN-Autoencoder)
 sims = [[0, 3, 128, 0, 0.2, -1, 0.001, 512, 100, 10, 1, [6, 8], 2, 0.5]]
 print('NUMBER OF SIMULATIONS: {}'.format(len(sims)))
 
