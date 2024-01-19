@@ -10,7 +10,7 @@ from keras.utils import to_categorical
 min_occ = 30
 train_size = 0.8
 val_size = 0.1
-epochs = 2
+epochs = 50
 patience_stop = 4
 lookforward = 1
 
